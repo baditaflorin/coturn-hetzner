@@ -8,8 +8,8 @@ services:
       --listening-port=3478
       --tls-listening-port=5349
       --fingerprint
-      --lt-cred-mech
-      --user=${TURN_USER}:${TURN_PASS}
+      --use-auth-secret
+      --static-auth-secret=${TURN_SECRET}
       --realm=${TURN_DOMAIN}
       --external-ip=${SERVER_IP}
       --min-port=49152
