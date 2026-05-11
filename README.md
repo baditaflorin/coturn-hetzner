@@ -4,6 +4,20 @@ Self-hosted TURN relay server on a Hetzner VPS using Docker. Fixes WebRTC connec
 
 **Cost: ~4 €/month** (Hetzner CX22 — 2 vCPU, 4 GB RAM)
 
+## Where this fits
+
+This service is one of three independently-deployable pieces of a self-hosted WebRTC stack:
+
+| Repo | Role | Listens on |
+|---|---|---|
+| **coturn-hetzner** (this) | TURN relay (the actual UDP/TCP packet relay) | `:3479` UDP/TCP + `:49152-65535` UDP relay range + `:9641` Prometheus |
+| [turn-token-server](https://github.com/baditaflorin/turn-token-server) | Issues HMAC TURN credentials to browsers | `:3000/credentials` |
+| [signaling-server](https://github.com/baditaflorin/signaling-server) | y-webrtc compatible WebSocket signaling | `:4444` ws |
+
+Example consumer: [anon-conf-poll](https://github.com/baditaflorin/anon-conf-poll).
+
+Run them on the same VPS or different ones — they're glued together only through the browser. The browser fetches credentials from `turn-token-server`, hands them to coturn at handshake time, and uses signaling to exchange SDP/ICE.
+
 ---
 
 ## What this solves
@@ -154,6 +168,68 @@ The relay range (49152–65535 UDP) is the one most commonly forgotten. Without 
 
 ---
 
+## Monitoring with Prometheus
+
+coturn has a built-in Prometheus exporter enabled via the `--prometheus` flag (already set in this repo's `docker-compose.yml`). It listens on `:9641/metrics` and exposes:
+
+```
+turn_total_allocations            counter   sessions created
+turn_completed_allocations        counter
+turn_traffic_bytes_total{...}     counter   bytes per direction (sent/rcvd, peer/client)
+turn_traffic_peer_rcvp_bytes      counter
+turn_traffic_peer_sentp_bytes     counter
+turn_traffic_rcvp_bytes           counter
+turn_traffic_sentp_bytes          counter
+turn_new_allocations_total        counter
+turn_total_traffic_bytes          counter
+```
+
+### Scraping over the LAN (simplest)
+
+If your Prometheus is on the same network as the TURN server, scrape directly:
+
+```yaml
+scrape_configs:
+  - job_name: coturn
+    static_configs:
+      - targets: ['10.0.0.10:9641']    # your TURN server's internal IP
+```
+
+### Scraping over the internet (TLS-gated)
+
+If Prometheus is remote, front coturn's `:9641` with nginx. See `nginx.example.conf` in this repo for a complete TLS terminator with IP allowlist + optional HTTP basic auth.
+
+```yaml
+scrape_configs:
+  - job_name: coturn
+    static_configs:
+      - targets: ['turn-metrics.example.com']
+    metrics_path: /metrics
+    scheme: https
+```
+
+### Sample alerts
+
+```yaml
+groups:
+- name: coturn
+  rules:
+  - alert: CoturnNoAllocations
+    expr: increase(turn_new_allocations_total[10m]) == 0
+    for: 30m
+    annotations:
+      summary: "coturn hasn't accepted any TURN allocations in 30 minutes"
+
+  - alert: CoturnTrafficSpike
+    expr: rate(turn_total_traffic_bytes[5m]) > 100e6   # 100 MB/s sustained
+    annotations:
+      summary: "coturn relay traffic above 100 MB/s — possible abuse"
+```
+
+Combine with [turn-token-server](https://github.com/baditaflorin/turn-token-server)'s `turn_token_credentials_issued_total` to correlate "credentials issued" with "allocations attempted" — if the ratio is way off, somebody is reusing static credentials they shouldn't have.
+
+---
+
 ## Troubleshooting
 
 **Still stuck at "connecting":** the UDP relay range is almost certainly blocked. Double-check ufw and the Hetzner cloud firewall.
@@ -161,3 +237,7 @@ The relay range (49152–65535 UDP) is the one most commonly forgotten. Without 
 **No relay candidates:** `SERVER_IP` in `.env` must match the server's exact public IP.
 
 **TLS cert errors:** make sure the domain resolves to the server before running `make certs`.
+
+**coturn sees `remote 127.0.0.1` in logs:** that's its own internal STUN healthcheck (`turnutils_stunclient -p 3479 127.0.0.1`). Real external clients show their public IP. Don't chase this — it's not a masquerade issue.
+
+**Mesh works on STUN but fails on TURN:** check `turn_token_credentials_denied_total` from turn-token-server. The most common cause is `ALLOWED_ORIGINS` not matching your app's actual `Origin` header.

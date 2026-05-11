@@ -2,7 +2,8 @@ services:
   coturn:
     image: coturn/coturn:4.6
     restart: unless-stopped
-    network_mode: host
+    network_mode: host          # coturn needs the host network to allocate from
+                                # ports 49152-65535 with the correct external IP
     env_file: .env
     command: >
       -n
@@ -18,8 +19,20 @@ services:
       --no-multicast-peers
       --no-cli
       --log-file=stdout
+      --prometheus
+    # coturn's built-in Prometheus exporter listens on :9641 by default.
+    # Front it with nginx (see nginx.example.conf) and restrict to your
+    # scraper IP — /metrics reveals session counts.
     healthcheck:
+      # turnutils_stunclient runs a STUN binding request against ourselves;
+      # if coturn is healthy it answers with our 127.0.0.1 mapped address.
       test: ["CMD", "turnutils_stunclient", "-p", "3479", "127.0.0.1"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
