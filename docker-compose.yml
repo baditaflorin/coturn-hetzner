@@ -3,10 +3,11 @@ services:
     image: coturn/coturn:4.6
     restart: unless-stopped
     network_mode: host
+    env_file: .env
     command: >
       -n
-      --listening-port=3478
-      --tls-listening-port=5349
+      --listening-ip=0.0.0.0
+      --listening-port=3479
       --fingerprint
       --use-auth-secret
       --static-auth-secret=${TURN_SECRET}
@@ -17,10 +18,8 @@ services:
       --no-multicast-peers
       --no-cli
       --log-file=stdout
-    volumes:
-      - ./certs:/certs:ro
     healthcheck:
-      test: ["CMD", "turnutils_uclient", "-t", "-p", "3478", "127.0.0.1"]
+      test: ["CMD", "turnutils_stunclient", "-p", "3479", "127.0.0.1"]
       interval: 30s
       timeout: 10s
       retries: 3
